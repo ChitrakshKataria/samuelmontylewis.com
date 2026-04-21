@@ -10,7 +10,9 @@
   <nav>
     <a href="/">Home</a>
     <a href="/archive/">Archive</a>
+    <a href="#account" class="nav-account" id="navAccountBtn">Login / Signup</a>
   </nav>
+  <div class="account-popover hidden" id="accountPopover"></div>
 
   <main>
     <a href="/" class="back">&lt;- back</a>
@@ -29,6 +31,7 @@
         location.pathname.replace(/post\.html$/, "posts/" + encodeURIComponent(legacySlug) + "/")
       );
     }
+    SMLBlog.renderNavAccount();
     SMLBlog.renderPost();
   </script>
 </body>

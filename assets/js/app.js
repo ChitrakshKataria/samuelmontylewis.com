@@ -76,6 +76,14 @@
     });
   }
 
+  function formatDateTime(value) {
+    return new Date(value).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    });
+  }
+
   function shortDate(date) {
     return new Date(date + "T00:00:00").toLocaleDateString("en-US", {
       month: "short",
@@ -128,50 +136,98 @@
     );
   }
 
+  function validPosts(posts) {
+    return (posts || []).filter((post) => post && post.slug && post.title);
+  }
+
   function setNotice(element, message, isError) {
     if (!element) return;
     element.textContent = message || "";
     element.classList.toggle("error", Boolean(isError));
   }
 
+  function withTimeout(promise, message = "Request timed out.", ms = 6000) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        window.setTimeout(() => reject(new Error(message)), ms);
+      })
+    ]);
+  }
+
+  async function restGet(path, params = {}, message = "Request timed out.") {
+    if (!configured) throw new Error("Supabase is not configured.");
+
+    const url = new URL(`${config.url}/rest/v1/${path}`);
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) url.searchParams.set(key, value);
+    });
+
+    const response = await withTimeout(
+      fetch(url.toString(), {
+        headers: {
+          apikey: config.anonKey,
+          authorization: `Bearer ${config.anonKey}`
+        }
+      }),
+      message,
+      12000
+    );
+
+    if (!response.ok) {
+      let detail = "";
+      try {
+        const body = await response.json();
+        detail = body.message || body.hint || "";
+      } catch {
+        detail = response.statusText;
+      }
+      throw new Error(detail || `Request failed with ${response.status}.`);
+    }
+
+    return response.json();
+  }
+
   async function listPublishedPosts(limit) {
-    if (!client) return sortPosts(DEMO_POSTS).slice(0, limit || DEMO_POSTS.length);
+    if (!configured) return sortPosts(DEMO_POSTS).slice(0, limit || DEMO_POSTS.length);
 
-    let query = client
-      .from("posts")
-      .select("id, slug, title, excerpt, content, status, published_at, created_at, updated_at")
-      .eq("status", "published")
-      .order("published_at", { ascending: false });
-
-    if (limit) query = query.limit(limit);
-
-    const { data, error } = await query;
-    if (error) throw error;
-    return data || [];
+    return restGet(
+      "posts",
+      {
+        select: "id,slug,title,excerpt,content,status,published_at,created_at,updated_at",
+        status: "eq.published",
+        order: "published_at.desc",
+        limit
+      },
+      "Posts took too long to load."
+    );
   }
 
   async function listAllPosts() {
     if (!client) return sortPosts(DEMO_POSTS);
-    const { data, error } = await client
+    const { data, error } = await withTimeout(client
       .from("posts")
       .select("id, slug, title, excerpt, content, status, published_at, created_at, updated_at")
-      .order("published_at", { ascending: false });
+      .order("published_at", { ascending: false }), "Posts took too long to load.");
 
     if (error) throw error;
     return data || [];
   }
 
   async function getPost(slug) {
-    if (!client) return DEMO_POSTS.find((post) => post.slug === slug);
+    if (!configured) return DEMO_POSTS.find((post) => post.slug === slug);
 
-    const { data, error } = await client
-      .from("posts")
-      .select("id, slug, title, excerpt, content, status, published_at, created_at, updated_at")
-      .eq("slug", slug)
-      .maybeSingle();
+    const data = await restGet(
+      "posts",
+      {
+        select: "id,slug,title,excerpt,content,status,published_at,created_at,updated_at",
+        slug: `eq.${slug}`,
+        limit: 1
+      },
+      "Post took too long to load."
+    );
 
-    if (error) throw error;
-    return data;
+    return data[0] || null;
   }
 
   async function savePost(post) {
@@ -202,20 +258,60 @@
     if (error) throw error;
   }
 
+  async function getSiteSetting(key) {
+    if (!configured) return null;
+    const data = await restGet(
+      "site_settings",
+      { key: `eq.${key}`, limit: 1 },
+      "Settings took too long to load."
+    );
+    return data[0]?.value ?? null;
+  }
+
+  async function saveSiteSetting(key, value) {
+    if (!client) throw new Error("Supabase is not configured.");
+    const { error } = await client
+      .from("site_settings")
+      .upsert({ key, value }, { onConflict: "key" });
+    if (error) throw error;
+  }
+
   async function getUser() {
     if (!client) return null;
-    const { data } = await client.auth.getUser();
+    const { data } = await withTimeout(
+      client.auth.getUser(),
+      "Account took too long to load.",
+      8000
+    );
     return data.user;
   }
 
-  async function isBlogAdmin(userId) {
+  async function getSessionUser() {
+    if (!client) return null;
+    try {
+      const { data } = await withTimeout(
+        client.auth.getSession(),
+        "Session timed out.",
+        5000
+      );
+      return data.session?.user || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function isBlogAdmin(userId, timeoutMs = 8000) {
     if (!client || !userId) return false;
 
-    const { data, error } = await client
-      .from("blog_admins")
-      .select("user_id")
-      .eq("user_id", userId)
-      .maybeSingle();
+    const { data, error } = await withTimeout(
+      client
+        .from("blog_admins")
+        .select("user_id")
+        .eq("user_id", userId)
+        .maybeSingle(),
+      "Admin check took too long.",
+      timeoutMs
+    );
 
     if (error) throw error;
     return Boolean(data);
@@ -223,23 +319,176 @@
 
   async function signIn(email, password) {
     if (!client) throw new Error("Add your Supabase anon key in assets/js/config.js.");
-    const { error } = await client.auth.signInWithPassword({ email, password });
+    const { error } = await withTimeout(
+      client.auth.signInWithPassword({ email, password }),
+      "Sign in took too long. Check your connection and try again.",
+      12000
+    );
     if (error) throw error;
+  }
+
+  async function signUp(email, password, displayName) {
+    if (!client) throw new Error("Supabase is not configured.");
+    const { data, error } = await withTimeout(
+      client.auth.signUp({
+        email,
+        password,
+        options: { data: { display_name: displayName } }
+      }),
+      "Account creation took too long. Check your connection and try again.",
+      12000
+    );
+    if (error) {
+      if (/already|registered|exists/i.test(error.message || "")) {
+        throw new Error("An account already exists for this email. Sign in instead.");
+      }
+      throw error;
+    }
+    if (Array.isArray(data.user?.identities) && data.user.identities.length === 0) {
+      throw new Error("An account already exists for this email. Sign in instead.");
+    }
+    if (data.user && data.session) ensureProfile(displayName).catch(() => {});
+    return data;
   }
 
   async function signOut() {
     if (!client) return;
-    await client.auth.signOut();
+    try {
+      await withTimeout(
+        client.auth.signOut(),
+        "Sign out took too long. Check your connection and try again.",
+        12000
+      );
+    } catch (error) {
+      // Supabase throws a lock error when an auth state change listener calls
+      // getSession() concurrently with signOut(). The session is cleared regardless.
+      if (/lock/i.test(error.message || "")) return;
+      throw error;
+    }
   }
+
+  async function ensureProfile(displayName) {
+    const user = await getUser();
+    if (!client || !user) return null;
+
+    const existing = await getProfile(user, false);
+    if (existing) {
+      if (!displayName) return existing;
+
+      const { data, error } = await client
+        .from("profiles")
+        .update({ display_name: displayName.trim().slice(0, 80) })
+        .eq("user_id", user.id)
+        .select("user_id, display_name")
+        .single();
+
+      if (error) throw error;
+      return data;
+    }
+
+    const name =
+      (displayName || user.user_metadata?.display_name || user.email?.split("@")[0] || "Reader")
+        .trim()
+        .slice(0, 80);
+
+    const { data, error } = await client
+      .from("profiles")
+      .insert({ user_id: user.id, display_name: name })
+      .select("user_id, display_name")
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  async function getProfile(user, createIfMissing = true, timeoutMs = 8000) {
+    if (!client || !user) return null;
+
+    let result;
+    try {
+      result = await withTimeout(
+        client
+          .from("profiles")
+          .select("user_id, display_name")
+          .eq("user_id", user.id)
+          .maybeSingle(),
+        "Profile took too long to load.",
+        timeoutMs
+      );
+    } catch {
+      return null;
+    }
+
+    if (result.error) return null;
+    return result.data || (createIfMissing ? ensureProfile() : null);
+  }
+
+  async function listComments(postId) {
+    if (!configured) return [];
+
+    return restGet(
+      "published_comments_with_profiles",
+      {
+        select: "id,post_id,user_id,body,created_at,display_name",
+        post_id: `eq.${postId}`,
+        order: "created_at.asc"
+      },
+      "Comments took too long to load."
+    );
+  }
+
+  async function listLikes(postId, includeUserIds) {
+    if (!configured) return [];
+
+    return restGet(
+      "post_likes",
+      {
+        select: includeUserIds ? "post_id,user_id" : "post_id",
+        post_id: `eq.${postId}`
+      },
+      "Likes took too long to load."
+    );
+  }
+
+  async function addComment(postId, body) {
+    if (!client) throw new Error("Supabase is not configured.");
+    await ensureProfile();
+    const { error } = await client.from("comments").insert({ post_id: postId, body });
+    if (error) throw error;
+  }
+
+  async function updateComment(commentId, body) {
+    if (!client) throw new Error("Supabase is not configured.");
+    const { error } = await client.from("comments").update({ body }).eq("id", commentId);
+    if (error) throw error;
+  }
+
+  async function deleteComment(commentId) {
+    if (!client) throw new Error("Supabase is not configured.");
+    const { error } = await client.from("comments").delete().eq("id", commentId);
+    if (error) throw error;
+  }
+
+  async function toggleLike(postId, liked) {
+    if (!client) throw new Error("Supabase is not configured.");
+    await ensureProfile();
+
+    const request = liked
+      ? client.from("post_likes").delete().eq("post_id", postId)
+      : client.from("post_likes").insert({ post_id: postId });
+
+    const { error } = await request;
+    if (error) throw error;
+  }
+
+  const DEFAULT_ABOUT = "Writer, thinker, occasional builder. I write about ideas that interest me - mostly technology, culture, and the quiet texture of everyday life.";
 
   async function renderHome() {
     const app = publicApp();
     if (app && !document.getElementById("postList")) {
       app.innerHTML = `
         <h1>Samuel Monty Lewis</h1>
-        <p class="about">
-          Writer, thinker, occasional builder. I write about ideas that interest me - mostly technology, culture, and the quiet texture of everyday life.
-        </p>
+        <p class="about" id="homeAbout">${escapeHtml(DEFAULT_ABOUT)}</p>
         <p class="section-label">Recent Posts</p>
         <ul class="post-list" id="postList">
           <li><p class="empty">Loading...</p></li>
@@ -247,6 +496,11 @@
         <a href="${siteUrl("/archive/")}" class="all-posts-link hidden" id="archiveLink">All posts -></a>
         <p class="notice" id="dataNotice"></p>`;
     }
+
+    getSiteSetting("about_text").then((text) => {
+      const el = document.getElementById("homeAbout");
+      if (el && text) el.textContent = text;
+    }).catch(() => {});
 
     document.title = "Samuel Monty Lewis";
     setActiveNav("home");
@@ -257,7 +511,7 @@
     if (!list) return;
 
     try {
-      const posts = await listPublishedPosts(5);
+      const posts = validPosts(await listPublishedPosts(5));
       if (!posts.length) {
         list.innerHTML = '<li><p class="empty">No posts yet.</p></li>';
         return;
@@ -282,6 +536,244 @@
     }
   }
 
+  async function renderAccountPanel(container, onChange) {
+    if (!container) return;
+
+    if (!client) {
+      container.innerHTML = '<p class="empty">Reader accounts require Supabase.</p>';
+      return;
+    }
+
+    container.innerHTML = accountAuthMarkup("home");
+    wireReaderAuthForm({
+      rootId: "homeAuth",
+      prefix: "home",
+      noticeId: "homeAuthNotice",
+      afterAuth: onChange
+    });
+
+    let user = null;
+    try {
+      user = await getSessionUser();
+    } catch {
+      return;
+    }
+
+    if (!user) return;
+
+    const renderSignedInPanel = (profile = null, admin = false) => {
+      container.innerHTML = `
+        <p class="section-label">${admin ? "Admin Account" : "Reader Account"}</p>
+        <p class="reader-status">Signed in as ${escapeHtml(user.email)}${admin ? " / admin" : ""}.</p>
+        <form id="profileForm">
+          <div class="form-group">
+            <label for="profileDisplayName">Display Name</label>
+            <input type="text" id="profileDisplayName" maxlength="80" value="${escapeHtml(profile?.display_name || user.user_metadata?.display_name || user.email?.split("@")[0] || "")}" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+            ${admin ? '<a class="btn" href="admin.html">Dashboard</a>' : ""}
+            <button type="button" class="btn" id="homeSignOutBtn">Sign Out</button>
+          </div>
+        </form>
+        <p class="notice" id="homeAuthNotice"></p>`;
+      wireAccountPanelActions(onChange);
+    };
+
+    renderSignedInPanel();
+
+    Promise.allSettled([
+      getProfile(user, false, 2000),
+      isBlogAdmin(user.id, 2000)
+    ]).then(([profileResult, adminResult]) => {
+      if (!container.isConnected || container.classList.contains("hidden")) return;
+      const profile = profileResult.status === "fulfilled" ? profileResult.value : null;
+      const admin = adminResult.status === "fulfilled" ? adminResult.value : false;
+      renderSignedInPanel(profile, admin);
+    });
+  }
+
+  function wireAccountPanelActions(onChange) {
+    const profileForm = document.getElementById("profileForm");
+    if (profileForm) {
+      profileForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const notice = document.getElementById("homeAuthNotice");
+        setNotice(notice, "Saving...");
+        try {
+          await ensureProfile(document.getElementById("profileDisplayName").value.trim());
+          setNotice(notice, "Saved.");
+          await onChange();
+        } catch (error) {
+          setNotice(notice, error.message, true);
+        }
+      });
+    }
+
+    const signOutBtn = document.getElementById("homeSignOutBtn");
+    if (signOutBtn) {
+      signOutBtn.addEventListener("click", async () => {
+        const notice = document.getElementById("homeAuthNotice");
+        setNotice(notice, "Signing out...");
+        try {
+          await signOut();
+          await onChange();
+        } catch (error) {
+          setNotice(notice, error.message, true);
+        }
+      });
+    }
+  }
+
+  function accountAuthMarkup(prefix) {
+    return `
+      <p class="section-label">Account</p>
+      <p class="reader-status">Sign in or create an account to like posts and comment.</p>
+      <div class="auth-stack" id="${prefix}Auth">
+        <form id="${prefix}SignInForm" data-auth-form="signin">
+          <div class="form-group">
+            <label for="${prefix}SignInEmail">Email</label>
+            <input type="email" id="${prefix}SignInEmail" autocomplete="email" required>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}SignInPassword">Password</label>
+            <input type="password" id="${prefix}SignInPassword" autocomplete="current-password" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Sign In</button>
+            <button type="button" class="btn" data-auth-mode="signup">Create Account</button>
+          </div>
+        </form>
+        <form id="${prefix}SignUpForm" data-auth-form="signup" class="hidden">
+          <div class="form-group">
+            <label for="${prefix}SignUpName">Display Name</label>
+            <input type="text" id="${prefix}SignUpName" maxlength="80" autocomplete="name" required placeholder="Display name">
+          </div>
+          <div class="form-group">
+            <label for="${prefix}SignUpEmail">Email</label>
+            <input type="email" id="${prefix}SignUpEmail" autocomplete="email" required>
+          </div>
+          <div class="form-group">
+            <label for="${prefix}SignUpPassword">Password</label>
+            <input type="password" id="${prefix}SignUpPassword" autocomplete="new-password" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Create Account</button>
+            <button type="button" class="btn" data-auth-mode="signin">Sign In</button>
+          </div>
+        </form>
+        <p class="notice" id="${prefix}AuthNotice"></p>
+      </div>`;
+  }
+
+  function readerAuthMarkup() {
+    return `
+      <p class="reader-status">Sign in or create an account to like posts and comment.</p>
+      <div class="auth-stack" id="readerAuth">
+        <form id="readerSignInForm" data-auth-form="signin">
+          <div class="form-group">
+            <label for="readerSignInEmail">Email</label>
+            <input type="email" id="readerSignInEmail" autocomplete="email" required>
+          </div>
+          <div class="form-group">
+            <label for="readerSignInPassword">Password</label>
+            <input type="password" id="readerSignInPassword" autocomplete="current-password" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Sign In</button>
+            <button type="button" class="btn" data-auth-mode="signup">Create Account</button>
+          </div>
+        </form>
+        <form id="readerSignUpForm" data-auth-form="signup" class="hidden">
+          <div class="form-group">
+            <label for="readerSignUpName">Display Name</label>
+            <input type="text" id="readerSignUpName" maxlength="80" autocomplete="name" required placeholder="Display name">
+          </div>
+          <div class="form-group">
+            <label for="readerSignUpEmail">Email</label>
+            <input type="email" id="readerSignUpEmail" autocomplete="email" required>
+          </div>
+          <div class="form-group">
+            <label for="readerSignUpPassword">Password</label>
+            <input type="password" id="readerSignUpPassword" autocomplete="new-password" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Create Account</button>
+            <button type="button" class="btn" data-auth-mode="signin">Sign In</button>
+          </div>
+        </form>
+        <p class="notice" id="readerNotice"></p>
+      </div>`;
+  }
+
+  async function renderNavAccount() {
+    const button = document.getElementById("navAccountBtn");
+    if (!button) return;
+
+    try {
+      if (!client) {
+        button.textContent = "Account";
+        return;
+      }
+
+      const user = await getSessionUser();
+      if (!user) {
+        button.textContent = "Login / Signup";
+        return;
+      }
+
+      button.textContent = user.email?.split("@")[0] || "Account";
+      getProfile(user, false, 2000).then((profile) => {
+        if (profile?.display_name) {
+          const freshButton = document.getElementById("navAccountBtn");
+          if (freshButton) freshButton.textContent = profile.display_name;
+        }
+      }).catch(() => {});
+    } catch {
+      button.textContent = "Login / Signup";
+    }
+  }
+
+  async function openAccountPopover() {
+    let popover = document.getElementById("accountPopover");
+    if (popover && !popover.classList.contains("hidden")) {
+      closeAccountPopover();
+      return;
+    }
+
+    if (!popover) {
+      popover = document.createElement("div");
+      popover.className = "account-popover hidden";
+      popover.id = "accountPopover";
+      document.body.appendChild(popover);
+    }
+
+    const refreshPopover = async () => {
+      const fresh = document.getElementById("accountPopover");
+      if (fresh) {
+        fresh.classList.remove("hidden");
+        await renderAccountPanel(fresh, refreshPopover);
+      }
+      renderNavAccount();
+    };
+
+    popover.classList.remove("hidden");
+    await renderAccountPanel(popover, refreshPopover);
+  }
+
+  function closeAccountPopover() {
+    const popover = document.getElementById("accountPopover");
+    if (popover) popover.classList.add("hidden");
+
+    if (window.location.hash === "#account") {
+      window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+    }
+  }
+
+  async function renderReaderAccount(container) {
+    return renderAccountPanel(container, () => renderReaderAccount(container));
+  }
+
   async function renderArchive() {
     const app = publicApp();
     if (app && !document.getElementById("archiveContent")) {
@@ -298,7 +790,7 @@
     if (!container) return;
 
     try {
-      const posts = await listPublishedPosts();
+      const posts = validPosts(await listPublishedPosts());
       if (!posts.length) {
         container.innerHTML = '<p class="empty">No posts yet.</p>';
         return;
@@ -369,9 +861,370 @@
       content.innerHTML = `
         <p class="post-date">${formatDate(post.published_at)}</p>
         <h1 class="post-page-title">${escapeHtml(post.title)}</h1>
-        <div class="post-body">${renderParagraphs(post.content)}</div>`;
+        <div class="post-body">${renderParagraphs(post.content)}</div>
+        <section class="engagement" id="engagement">
+          <div class="engagement-header">
+            <h2 class="engagement-title">Discussion</h2>
+            <button class="btn btn-small" id="likeBtn" type="button">Like</button>
+          </div>
+          <div class="reader-panel" id="readerPanel"></div>
+          <p class="section-label">Comments</p>
+          <ul class="comment-list" id="commentList">
+            <li><p class="empty">Loading...</p></li>
+          </ul>
+        </section>`;
+      initEngagement(post);
     } catch (error) {
       content.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  async function initEngagement(post) {
+    const panel = document.getElementById("readerPanel");
+    const likeBtn = document.getElementById("likeBtn");
+    const commentList = document.getElementById("commentList");
+    if (!panel || !likeBtn || !commentList) return;
+
+    let editingCommentId = null;
+    let confirmingDeleteCommentId = null;
+    let commentComposerOpen = false;
+
+    async function refresh() {
+      try {
+      if (!client) {
+        panel.innerHTML = '<p class="empty">Comments and likes require Supabase.</p>';
+        commentList.innerHTML = '<li><p class="empty">Unavailable.</p></li>';
+        likeBtn.textContent = "Like";
+        likeBtn.disabled = true;
+        return;
+      }
+
+      const user = await getSessionUser().catch(() => null);
+      const [profileResult, likesResult, commentsResult, adminResult] = await Promise.allSettled([
+        user ? getProfile(user, false, 2000) : Promise.resolve(null),
+        listLikes(post.id, Boolean(user)),
+        listComments(post.id),
+        user ? isBlogAdmin(user.id, 2000) : Promise.resolve(false)
+      ]);
+      const profile = profileResult.status === "fulfilled" ? profileResult.value : null;
+      const likes = likesResult.status === "fulfilled" ? likesResult.value : [];
+      const comments = commentsResult.status === "fulfilled" ? commentsResult.value : [];
+      const admin = adminResult.status === "fulfilled" ? adminResult.value : false;
+      const commentsError = commentsResult.status === "rejected" ? commentsResult.reason : null;
+      const liked = Boolean(user && likes.some((like) => like.user_id === user.id));
+
+      likeBtn.textContent = `${liked ? "Liked" : "Like"} (${likes.length})`;
+      likeBtn.dataset.liked = liked ? "true" : "false";
+      likeBtn.disabled = false;
+
+      panel.innerHTML = user
+        ? commentComposerOpen
+          ? `
+            <p class="reader-status">Signed in as ${escapeHtml(profile?.display_name || user.email)}.</p>
+            <form class="comment-form" id="commentForm">
+              <div class="form-group">
+                <label for="commentBody">Comment</label>
+                <textarea id="commentBody" maxlength="2000" required placeholder="Write a comment."></textarea>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Post Comment</button>
+                <button type="button" class="btn" id="cancelCommentComposerBtn">Cancel</button>
+              </div>
+              <p class="notice" id="readerNotice"></p>
+            </form>`
+          : `
+            <div class="reader-panel-compact">
+              <button type="button" class="btn btn-primary" id="openCommentComposerBtn">Add Comment</button>
+              <p class="notice" id="readerNotice"></p>
+            </div>`
+        : `
+          ${readerAuthMarkup()}`;
+
+      commentList.innerHTML = comments.length
+        ? comments
+            .map(
+              (comment) => {
+                const canEdit = Boolean(user && comment.user_id === user.id);
+                const canDelete = Boolean(canEdit || admin);
+                const actions = `
+                  <div class="comment-actions">
+                    ${canEdit ? `<button type="button" class="btn btn-small" data-edit-comment="${escapeHtml(comment.id)}">Edit</button>` : ""}
+                    ${canDelete ? `<button type="button" class="btn btn-danger btn-small" data-delete-comment="${escapeHtml(comment.id)}">Delete</button>` : ""}
+                  </div>`;
+
+                if (editingCommentId === comment.id) {
+                  return `
+                    <li>
+                      <p class="comment-meta">${escapeHtml(comment.display_name || "Reader")} / ${formatDateTime(comment.created_at)}</p>
+                      <textarea class="comment-edit-field" data-comment-edit-body="${escapeHtml(comment.id)}">${escapeHtml(comment.body)}</textarea>
+                      <div class="comment-actions">
+                        <button type="button" class="btn btn-primary btn-small" data-save-comment="${escapeHtml(comment.id)}">Save</button>
+                        <button type="button" class="btn btn-small" data-cancel-comment-edit>Cancel</button>
+                      </div>
+                    </li>`;
+                }
+
+                if (confirmingDeleteCommentId === comment.id) {
+                  return `
+                    <li>
+                      <p class="comment-meta">${escapeHtml(comment.display_name || "Reader")} / ${formatDateTime(comment.created_at)}</p>
+                      <p class="comment-body">${escapeHtml(comment.body)}</p>
+                      <div class="inline-confirm">
+                        <p>Delete this comment?</p>
+                        <div class="comment-actions">
+                          <button type="button" class="btn btn-danger btn-small" data-confirm-delete-comment="${escapeHtml(comment.id)}">Delete</button>
+                          <button type="button" class="btn btn-small" data-cancel-comment-delete>Cancel</button>
+                        </div>
+                      </div>
+                    </li>`;
+                }
+
+                return `
+                  <li>
+                    <p class="comment-meta">${escapeHtml(comment.display_name || "Reader")} / ${formatDateTime(comment.created_at)}</p>
+                    <p class="comment-body">${escapeHtml(comment.body)}</p>
+                    ${canEdit || canDelete ? actions : ""}
+                  </li>`;
+              }
+            )
+            .join("")
+        : `<li><p class="empty">${commentsError ? escapeHtml(commentsError.message) : "No comments yet."}</p></li>`;
+
+      wireEngagementForm(refresh, {
+        onCommentPosted() {
+          commentComposerOpen = false;
+        }
+      });
+      wireCommentComposerToggle();
+      wireCommentActions();
+      } catch (error) {
+        panel.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+        commentList.innerHTML = '<li><p class="empty">Comments unavailable.</p></li>';
+        likeBtn.disabled = true;
+      }
+    }
+
+    function wireCommentActions() {
+      commentList.onclick = async (event) => {
+        const editId = event.target.dataset.editComment;
+        const saveId = event.target.dataset.saveComment;
+        const deleteId = event.target.dataset.deleteComment;
+        const confirmDeleteId = event.target.dataset.confirmDeleteComment;
+
+        if (editId) {
+          editingCommentId = editId;
+          confirmingDeleteCommentId = null;
+          await refresh();
+          return;
+        }
+
+        if (event.target.dataset.cancelCommentEdit !== undefined) {
+          editingCommentId = null;
+          await refresh();
+          return;
+        }
+
+        if (event.target.dataset.cancelCommentDelete !== undefined) {
+          confirmingDeleteCommentId = null;
+          await refresh();
+          return;
+        }
+
+        if (saveId) {
+          const field = commentList.querySelector(`[data-comment-edit-body="${CSS.escape(saveId)}"]`);
+          const body = field ? field.value.trim() : "";
+          if (!body) return;
+
+          try {
+            await updateComment(saveId, body);
+            editingCommentId = null;
+            await refresh();
+          } catch (error) {
+            setNotice(document.getElementById("readerNotice"), error.message, true);
+          }
+          return;
+        }
+
+        if (deleteId) {
+          confirmingDeleteCommentId = deleteId;
+          editingCommentId = null;
+          await refresh();
+          return;
+        }
+
+        if (confirmDeleteId) {
+          try {
+            await deleteComment(confirmDeleteId);
+            confirmingDeleteCommentId = null;
+            await refresh();
+          } catch (error) {
+            setNotice(document.getElementById("readerNotice"), error.message, true);
+          }
+        }
+      };
+    }
+
+    function wireCommentComposerToggle() {
+      const openBtn = document.getElementById("openCommentComposerBtn");
+      if (openBtn) {
+        openBtn.addEventListener("click", async () => {
+          commentComposerOpen = true;
+          await refresh();
+          document.getElementById("commentBody")?.focus();
+        });
+      }
+
+      const cancelBtn = document.getElementById("cancelCommentComposerBtn");
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", async () => {
+          commentComposerOpen = false;
+          await refresh();
+        });
+      }
+    }
+
+    likeBtn.addEventListener("click", async () => {
+      const user = await getUser();
+      if (!user) {
+        const notice = document.getElementById("readerNotice");
+        setNotice(notice, "Sign in to like this post.", true);
+        return;
+      }
+
+      likeBtn.disabled = true;
+      try {
+        await toggleLike(post.id, likeBtn.dataset.liked === "true");
+        await refresh();
+      } catch (error) {
+        setNotice(document.getElementById("readerNotice"), error.message, true);
+        likeBtn.disabled = false;
+      }
+    });
+
+    if (client) client.auth.onAuthStateChange(() => refresh());
+    await refresh();
+  }
+
+  function wireReaderAuthForm({ rootId, prefix, noticeId, afterAuth }) {
+    const root = document.getElementById(rootId);
+    const signInForm = document.getElementById(`${prefix}SignInForm`);
+    const signUpForm = document.getElementById(`${prefix}SignUpForm`);
+    if (!root || !signInForm || !signUpForm) return;
+
+    const showMode = (mode) => {
+      const signingUp = mode === "signup";
+      signInForm.classList.toggle("hidden", signingUp);
+      signUpForm.classList.toggle("hidden", !signingUp);
+      setNotice(document.getElementById(noticeId), "");
+    };
+
+    root.querySelectorAll("[data-auth-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        showMode(button.dataset.authMode);
+      });
+    });
+
+    signInForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const notice = document.getElementById(noticeId);
+      const submitButtons = [...root.querySelectorAll("button")];
+      const email = document.getElementById(`${prefix}SignInEmail`).value.trim();
+      const password = document.getElementById(`${prefix}SignInPassword`).value;
+
+      submitButtons.forEach((button) => {
+        button.disabled = true;
+      });
+      setNotice(notice, "Signing in...");
+      try {
+        await signIn(email, password);
+        ensureProfile().catch(() => {});
+        await afterAuth();
+      } catch (error) {
+        setNotice(notice, error.message, true);
+      } finally {
+        submitButtons.forEach((button) => {
+          button.disabled = false;
+        });
+      }
+    });
+
+    signUpForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const notice = document.getElementById(noticeId);
+      const submitButtons = [...root.querySelectorAll("button")];
+      const displayName = document.getElementById(`${prefix}SignUpName`).value.trim();
+      const email = document.getElementById(`${prefix}SignUpEmail`).value.trim();
+      const password = document.getElementById(`${prefix}SignUpPassword`).value;
+
+      submitButtons.forEach((button) => {
+        button.disabled = true;
+      });
+      setNotice(notice, "Creating account...");
+      try {
+        const data = await signUp(email, password, displayName || email.split("@")[0]);
+        if (!data.session) {
+          showMode("signin");
+          setNotice(notice, "Check your email to finish creating this account. Then sign in here.");
+          return;
+        }
+        await afterAuth();
+      } catch (error) {
+        setNotice(notice, error.message, true);
+      } finally {
+        submitButtons.forEach((button) => {
+          button.disabled = false;
+        });
+      }
+    });
+  }
+
+  function wireEngagementForm(refresh, options = {}) {
+    const authForm = document.getElementById("readerAuth");
+    const commentForm = document.getElementById("commentForm");
+    const signOutBtn = document.getElementById("readerSignOutBtn");
+
+    if (authForm) {
+      wireReaderAuthForm({
+        rootId: "readerAuth",
+        prefix: "reader",
+        noticeId: "readerNotice",
+        afterAuth: refresh
+      });
+    }
+
+    if (commentForm) {
+      commentForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const notice = document.getElementById("readerNotice");
+        const body = document.getElementById("commentBody").value.trim();
+        if (!body) return;
+
+        setNotice(notice, "Posting...");
+        try {
+          const path = stripBasePath(window.location.pathname).replace(/\/+$/, "");
+          const slug = path.startsWith("/posts/") ? path.split("/")[2] : new URLSearchParams(window.location.search).get("slug");
+          const post = await getPost(slug);
+          await addComment(post.id, body);
+          setNotice(notice, "");
+          if (options.onCommentPosted) options.onCommentPosted();
+          await refresh();
+        } catch (error) {
+          setNotice(notice, error.message, true);
+        }
+      });
+    }
+
+    if (signOutBtn) {
+      signOutBtn.addEventListener("click", async () => {
+        const notice = document.getElementById("readerNotice");
+        setNotice(notice, "Signing out...");
+        try {
+          await signOut();
+          await refresh();
+        } catch (error) {
+          setNotice(notice, error.message, true);
+        }
+      });
     }
   }
 
@@ -399,6 +1252,11 @@
       renderStats(posts);
       renderActivityBars(posts);
       renderAdminList(posts);
+
+      getSiteSetting("about_text").then((text) => {
+        const field = document.getElementById("aboutField");
+        if (field && text !== null) field.value = text;
+      }).catch(() => {});
     }
 
     function renderStats(items) {
@@ -593,6 +1451,18 @@
       }
     });
 
+    document.getElementById("aboutForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const notice = document.getElementById("aboutNotice");
+      setNotice(notice, "Saving...");
+      try {
+        await saveSiteSetting("about_text", document.getElementById("aboutField").value.trim());
+        setNotice(notice, "Saved.");
+      } catch (error) {
+        setNotice(notice, error.message, true);
+      }
+    });
+
     clearForm();
     if (!configured) {
       setNotice(
@@ -616,6 +1486,7 @@
   }
 
   async function routePublicSite() {
+    renderNavAccount();
     const pathname = stripBasePath(window.location.pathname).replace(/\/+$/, "") || "/";
 
     if (pathname === "/" || pathname === "/index.html") {
@@ -652,6 +1523,22 @@
     });
 
     document.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("#navAccountBtn")) {
+        event.preventDefault();
+        openAccountPopover();
+        return;
+      }
+
+      const popover = document.getElementById("accountPopover");
+      if (
+        popover &&
+        !popover.classList.contains("hidden") &&
+        event.target instanceof Element &&
+        !event.target.closest("#accountPopover")
+      ) {
+        closeAccountPopover();
+      }
+
       const link = event.target.closest("a");
       if (!link) return;
 
@@ -678,11 +1565,30 @@
     });
 
     window.addEventListener("popstate", routePublicSite);
+    if (client) client.auth.onAuthStateChange((_event, session) => {
+      const button = document.getElementById("navAccountBtn");
+      if (!button) return;
+      const user = session?.user || null;
+      button.textContent = user ? user.email?.split("@")[0] || "Account" : "Login / Signup";
+      if (user) {
+        getProfile(user, false).then((profile) => {
+          if (profile?.display_name) {
+            const btn = document.getElementById("navAccountBtn");
+            if (btn) btn.textContent = profile.display_name;
+          }
+        }).catch(() => {});
+      }
+    });
+    window.addEventListener("hashchange", () => {
+      if (window.location.hash === "#account") openAccountPopover();
+    });
     routePublicSite();
+    if (window.location.hash === "#account") window.setTimeout(openAccountPopover, 0);
   }
 
   window.SMLBlog = {
     initPublicSite,
+    renderNavAccount,
     renderHome,
     renderArchive,
     renderPost,

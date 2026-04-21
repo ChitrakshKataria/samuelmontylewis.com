@@ -10,7 +10,9 @@
   <nav>
     <a href="/">Home</a>
     <a href="/archive/" class="active">Archive</a>
+    <a href="#account" class="nav-account" id="navAccountBtn">Login / Signup</a>
   </nav>
+  <div class="account-popover hidden" id="accountPopover"></div>
 
   <main>
     <p class="section-label">All Writing</p>
@@ -25,6 +27,7 @@
     if (location.pathname.endsWith("/archive.html")) {
       history.replaceState({}, "", location.pathname.replace(/archive\.html$/, "archive/"));
     }
+    SMLBlog.renderNavAccount();
     SMLBlog.renderArchive();
   </script>
 </body>
