@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Post - Samuel Monty Lewis</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/archive/">Archive</a>
+  </nav>
+
+  <main>
+    <a href="/" class="back">&lt;- back</a>
+    <div id="content"><p class="empty">Loading...</p></div>
+  </main>
+
+  <script src="assets/js/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="assets/js/app.js"></script>
+  <script>
+    const legacySlug = new URLSearchParams(location.search).get("slug");
+    if (legacySlug && location.pathname.endsWith("/post.html")) {
+      history.replaceState(
+        {},
+        "",
+        location.pathname.replace(/post\.html$/, "posts/" + encodeURIComponent(legacySlug) + "/")
+      );
+    }
+    SMLBlog.renderPost();
+  </script>
+</body>
+</html>

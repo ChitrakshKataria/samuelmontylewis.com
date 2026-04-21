@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Archive - Samuel Monty Lewis</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/archive/" class="active">Archive</a>
+  </nav>
+
+  <main>
+    <p class="section-label">All Writing</p>
+    <h1>Archive</h1>
+    <div id="archiveContent"><p class="empty">Loading...</p></div>
+  </main>
+
+  <script src="assets/js/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="assets/js/app.js"></script>
+  <script>
+    if (location.pathname.endsWith("/archive.html")) {
+      history.replaceState({}, "", location.pathname.replace(/archive\.html$/, "archive/"));
+    }
+    SMLBlog.renderArchive();
+  </script>
+</body>
+</html>
