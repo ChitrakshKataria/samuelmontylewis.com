@@ -35,7 +35,8 @@
   const config = {
     url: window.SML_SUPABASE_URL || "",
     anonKey: window.SML_SUPABASE_ANON_KEY || "",
-    basePath: (window.SML_BASE_PATH || "").replace(/\/$/, "")
+    basePath: (window.SML_BASE_PATH || "").replace(/\/$/, ""),
+    siteUrl: (window.SML_SITE_URL || "").replace(/\/$/, "")
   };
 
   const configured = Boolean(
@@ -104,6 +105,16 @@
   function siteUrl(path) {
     const cleanPath = path.startsWith("/") ? path : `/${path}`;
     return `${config.basePath}${cleanPath}` || "/";
+  }
+
+  function absoluteSiteUrl(path) {
+    const cleanPath = path.startsWith("/") ? path : `/${path}`;
+    if (config.siteUrl) return `${config.siteUrl}${cleanPath}`;
+    return `${window.location.origin}${siteUrl(cleanPath)}`;
+  }
+
+  function authRedirectUrl() {
+    return absoluteSiteUrl("/?account=confirmed");
   }
 
   function stripBasePath(pathname) {
@@ -333,7 +344,10 @@
       client.auth.signUp({
         email,
         password,
-        options: { data: { display_name: displayName } }
+        options: {
+          emailRedirectTo: authRedirectUrl(),
+          data: { display_name: displayName }
+        }
       }),
       "Account creation took too long. Check your connection and try again.",
       12000
@@ -768,6 +782,15 @@
     if (window.location.hash === "#account") {
       window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
     }
+  }
+
+  async function showAccountConfirmationNotice() {
+    if (new URLSearchParams(window.location.search).get("account") !== "confirmed") return;
+    await openAccountPopover();
+    setNotice(
+      document.getElementById("homeAuthNotice"),
+      "Email confirmed. You can now use your account."
+    );
   }
 
   async function renderReaderAccount(container) {
@@ -1583,6 +1606,7 @@
       if (window.location.hash === "#account") openAccountPopover();
     });
     routePublicSite();
+    window.setTimeout(showAccountConfirmationNotice, 0);
     if (window.location.hash === "#account") window.setTimeout(openAccountPopover, 0);
   }
 
