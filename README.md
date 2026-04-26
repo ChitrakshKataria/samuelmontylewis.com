@@ -9,5 +9,5 @@ In Supabase, open **Authentication > URL Configuration** and make sure:
 
 - **Site URL** is the live site URL, not localhost.
 - **Redirect URLs** includes:
-  - `https://samuelmontylewis.com/email-confirmed/`
+  - `https://samuelmontylewis.github.io/samuelmontylewis.com/email-confirmed/`
   - `http://localhost:8000/email-confirmed/`
