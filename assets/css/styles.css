@@ -199,8 +199,14 @@ label,
 .post-meta,
 .post-date,
 .empty {
-  color: var(--text-faint);
-  font-size: 11px;
+  color: #777;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.post-meta,
+.post-date {
+  letter-spacing: 0.03em;
 }
 
 .empty {
@@ -251,8 +257,10 @@ label,
 }
 
 .archive-list .post-date {
+  min-width: 92px;
   flex-shrink: 0;
   white-space: nowrap;
+  text-align: right;
 }
 
 .post-page-title {
