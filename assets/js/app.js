@@ -50,6 +50,95 @@
     ? window.supabase.createClient(config.url, config.anonKey)
     : null;
 
+  const COMMENT_MODERATION_STORAGE_KEY = "sml-comment-moderation-level";
+  const COMMENT_MODERATION_CHANGE_EVENT = "sml:comment-moderation-change";
+  const COMMENT_MODERATION_LIBRARY_EVENT = "sml:comment-moderation-library-ready";
+  const COMMENT_MODERATION_LEVELS = {
+    0: {
+      value: 0,
+      label: "Off",
+      description: "No masking. Comments render exactly as written.",
+      collapseRuns: false,
+      detectSeparatedLetters: false
+    },
+    1: {
+      value: 1,
+      label: "Light",
+      description: "Masks direct matches and obvious leetspeak.",
+      collapseRuns: false,
+      detectSeparatedLetters: false
+    },
+    2: {
+      value: 2,
+      label: "Balanced",
+      description: "Also catches stretched spellings like crazzzyyyy shiiiiiiit.",
+      collapseRuns: true,
+      detectSeparatedLetters: false
+    },
+    3: {
+      value: 3,
+      label: "Strict",
+      description: "Also catches spaced and punctuated spellings like s h i t or s.h.i.t.",
+      collapseRuns: true,
+      detectSeparatedLetters: true
+    }
+  };
+  const COMMENT_MODERATION_CUSTOM_TERMS = [
+    { term: "asshole", mode: "substring" },
+    { term: "bastard", mode: "substring" },
+    { term: "bitch", mode: "substring" },
+    { term: "bullshit", mode: "substring" },
+    { term: "cunt", mode: "substring" },
+    { term: "dickhead", mode: "substring" },
+    { term: "faggot", mode: "token" },
+    { term: "fuck", mode: "substring" },
+    { term: "motherfucker", mode: "substring" },
+    { term: "nigga", mode: "token" },
+    { term: "nigger", mode: "token" },
+    { term: "pussy", mode: "substring" },
+    { term: "retard", mode: "token" },
+    { term: "shit", mode: "substring" },
+    { term: "slut", mode: "token" },
+    { term: "whore", mode: "token" }
+  ];
+  const COMMENT_MODERATION_LIBRARY_PATH = "/assets/data/leo-profanity-en.json";
+  const COMMENT_MODERATION_WHITELIST = [
+    "assistant",
+    "classic",
+    "glass",
+    "passage",
+    "scunthorpe"
+  ];
+  const LEET_NORMALIZATION_MAP = {
+    "@": "a",
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "7": "t",
+    "8": "b",
+    "9": "g",
+    "!": "i",
+    "$": "s",
+    "+": "t",
+    "|": "i"
+  };
+  const LEET_REGEX_MAP = {
+    a: "[a4@]",
+    b: "[b8]",
+    e: "[e3]",
+    g: "[g69]",
+    i: "[i1!|l]",
+    o: "[o0]",
+    s: "[s5$]",
+    t: "[t7+]"
+  };
+  let compiledCommentModerationTerms = null;
+  let commentModerationLibraryWords = [];
+  let commentModerationLibraryLoaded = false;
+  let commentModerationLibraryPromise = null;
+
   function escapeHtml(value) {
     return String(value || "")
       .replaceAll("&", "&amp;")
@@ -117,6 +206,10 @@
     return absoluteSiteUrl("/email-confirmed/");
   }
 
+  function authRecoveryUrl() {
+    return absoluteSiteUrl("/reset-password/");
+  }
+
   function stripBasePath(pathname) {
     if (config.basePath && pathname.startsWith(config.basePath)) {
       return pathname.slice(config.basePath.length) || "/";
@@ -155,6 +248,312 @@
     if (!element) return;
     element.textContent = message || "";
     element.classList.toggle("error", Boolean(isError));
+  }
+
+  function escapeRegExp(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function normalizeComparableChar(char) {
+    const normalized = String(char || "")
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "");
+    if (!normalized) return "";
+    const mapped = LEET_NORMALIZATION_MAP[normalized[0]] || normalized[0];
+    return /[a-z0-9]/.test(mapped) ? mapped : "";
+  }
+
+  function normalizeComparableText(value) {
+    const chars = [];
+    for (const char of String(value || "")) {
+      const normalized = normalizeComparableChar(char);
+      if (normalized) chars.push(normalized);
+    }
+    return chars.join("");
+  }
+
+  function collapseMappedCharacters(chars, indexMap) {
+    const collapsedChars = [];
+    const collapsedMap = [];
+    chars.forEach((char, index) => {
+      if (collapsedChars[collapsedChars.length - 1] === char) return;
+      collapsedChars.push(char);
+      collapsedMap.push(indexMap[index]);
+    });
+    return {
+      text: collapsedChars.join(""),
+      map: collapsedMap
+    };
+  }
+
+  function buildNormalizedTokenMaps(text) {
+    const tokens = [];
+    const source = String(text || "");
+    const tokenRegex = /[A-Za-z0-9@!$+|]+/g;
+    let match;
+
+    while ((match = tokenRegex.exec(source))) {
+      const raw = match[0];
+      const start = match.index;
+      const chars = [];
+      const indexMap = [];
+
+      for (let offset = 0; offset < raw.length; offset += 1) {
+        const normalized = normalizeComparableChar(raw[offset]);
+        if (!normalized) continue;
+        chars.push(normalized);
+        indexMap.push(start + offset);
+      }
+
+      if (!chars.length) continue;
+
+      const collapsed = collapseMappedCharacters(chars, indexMap);
+      tokens.push({
+        start,
+        end: start + raw.length,
+        normalized: chars.join(""),
+        indexMap,
+        collapsedNormalized: collapsed.text,
+        collapsedIndexMap: collapsed.map
+      });
+    }
+
+    return tokens;
+  }
+
+  function buildSeparatedPatternSource(term) {
+    return normalizeComparableText(term)
+      .split("")
+      .map((char) => `${LEET_REGEX_MAP[char] || escapeRegExp(char)}+`)
+      .join("(?:[^a-z0-9]+)*");
+  }
+
+  function getCompiledCommentModerationTerms() {
+    if (compiledCommentModerationTerms) return compiledCommentModerationTerms;
+
+    const customPatterns = COMMENT_MODERATION_CUSTOM_TERMS.map((item) => ({
+      ...item,
+      normalized: normalizeComparableText(item.term),
+      separatedPatternSource: buildSeparatedPatternSource(item.term)
+    }));
+    const libraryPatterns = commentModerationLibraryWords.map((term) => ({
+      term,
+      mode: "token",
+      normalized: normalizeComparableText(term),
+      separatedPatternSource: buildSeparatedPatternSource(term),
+      source: "leo-profanity"
+    }));
+
+    compiledCommentModerationTerms = [...customPatterns, ...libraryPatterns];
+
+    return compiledCommentModerationTerms;
+  }
+
+  function normalizeModerationWordList(words) {
+    return [...new Set(
+      (words || [])
+        .map((word) => normalizeComparableText(word))
+        .filter((word) => word && word.length > 1 && !COMMENT_MODERATION_WHITELIST.includes(word))
+    )];
+  }
+
+  async function ensureCommentModerationLibraryLoaded() {
+    if (commentModerationLibraryLoaded) return;
+    if (commentModerationLibraryPromise) {
+      await commentModerationLibraryPromise;
+      return;
+    }
+
+    commentModerationLibraryPromise = fetch(siteUrl(COMMENT_MODERATION_LIBRARY_PATH))
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to load moderation dictionary (${response.status}).`);
+        }
+        return response.json();
+      })
+      .then((words) => {
+        commentModerationLibraryWords = normalizeModerationWordList(words);
+        compiledCommentModerationTerms = null;
+        commentModerationLibraryLoaded = true;
+        window.dispatchEvent(new CustomEvent(COMMENT_MODERATION_LIBRARY_EVENT));
+      })
+      .catch(() => {
+        commentModerationLibraryWords = [];
+        commentModerationLibraryLoaded = false;
+      })
+      .finally(() => {
+        commentModerationLibraryPromise = null;
+      });
+
+    await commentModerationLibraryPromise;
+  }
+
+  function readCommentModerationLevel() {
+    try {
+      const raw = Number(window.localStorage.getItem(COMMENT_MODERATION_STORAGE_KEY));
+      return Number.isInteger(raw) && COMMENT_MODERATION_LEVELS[raw]
+        ? raw
+        : 2;
+    } catch {
+      return 2;
+    }
+  }
+
+  function getCommentModerationProfile() {
+    return COMMENT_MODERATION_LEVELS[readCommentModerationLevel()] || COMMENT_MODERATION_LEVELS[2];
+  }
+
+  function setCommentModerationLevel(value) {
+    const numericValue = Number(value);
+    const nextValue = COMMENT_MODERATION_LEVELS[numericValue] ? numericValue : 2;
+
+    try {
+      window.localStorage.setItem(COMMENT_MODERATION_STORAGE_KEY, String(nextValue));
+    } catch {}
+
+    window.dispatchEvent(
+      new CustomEvent(COMMENT_MODERATION_CHANGE_EVENT, {
+        detail: getCommentModerationProfile()
+      })
+    );
+  }
+
+  function collectTokenMatches(source, indexMap, token, pattern) {
+    if (!source || !pattern.normalized) return [];
+
+    if (pattern.mode === "token") {
+      return source === pattern.normalized
+        ? [{ start: token.start, end: token.end, term: pattern.term }]
+        : [];
+    }
+
+    const ranges = [];
+    let fromIndex = 0;
+
+    while (fromIndex < source.length) {
+      const matchIndex = source.indexOf(pattern.normalized, fromIndex);
+      if (matchIndex === -1) break;
+      const start = indexMap[matchIndex];
+      const end = indexMap[matchIndex + pattern.normalized.length - 1] + 1;
+      ranges.push({ start, end, term: pattern.term });
+      fromIndex = matchIndex + pattern.normalized.length;
+    }
+
+    return ranges;
+  }
+
+  function collectSeparatedMatches(text, patterns) {
+    const ranges = [];
+    const source = String(text || "").toLowerCase();
+
+    patterns.forEach((pattern) => {
+      const regex = new RegExp(pattern.separatedPatternSource, "gi");
+      let match;
+
+      while ((match = regex.exec(source))) {
+        const start = match.index;
+        const end = start + match[0].length;
+        const before = source[start - 1];
+        const after = source[end];
+
+        if (pattern.mode === "token" && ((before && /[a-z0-9]/.test(before)) || (after && /[a-z0-9]/.test(after)))) {
+          continue;
+        }
+
+        ranges.push({ start, end, term: pattern.term });
+      }
+    });
+
+    return ranges;
+  }
+
+  function mergeRanges(ranges) {
+    if (!ranges.length) return [];
+
+    const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged = [sorted[0]];
+
+    for (let index = 1; index < sorted.length; index += 1) {
+      const current = sorted[index];
+      const previous = merged[merged.length - 1];
+
+      if (current.start <= previous.end) {
+        previous.end = Math.max(previous.end, current.end);
+        continue;
+      }
+
+      merged.push({ ...current });
+    }
+
+    return merged;
+  }
+
+  function maskCommentRanges(text, ranges) {
+    if (!ranges.length) return String(text || "");
+
+    const chars = String(text || "").split("");
+    ranges.forEach((range) => {
+      for (let index = range.start; index < range.end; index += 1) {
+        if (normalizeComparableChar(chars[index])) chars[index] = "*";
+      }
+    });
+    return chars.join("");
+  }
+
+  function moderateCommentText(text) {
+    const original = String(text || "");
+    const profile = getCommentModerationProfile();
+    if (!original || profile.value === 0) {
+      return {
+        text: original,
+        matches: [],
+        profile
+      };
+    }
+
+    const patterns = getCompiledCommentModerationTerms();
+    const tokens = buildNormalizedTokenMaps(original);
+    const matches = [];
+
+    tokens.forEach((token) => {
+      patterns.forEach((pattern) => {
+        matches.push(...collectTokenMatches(token.normalized, token.indexMap, token, pattern));
+        if (profile.collapseRuns) {
+          matches.push(...collectTokenMatches(token.collapsedNormalized, token.collapsedIndexMap, token, pattern));
+        }
+      });
+    });
+
+    if (profile.detectSeparatedLetters) {
+      matches.push(...collectSeparatedMatches(original, patterns));
+    }
+
+    const mergedMatches = mergeRanges(matches);
+    return {
+      text: maskCommentRanges(original, mergedMatches),
+      matches: mergedMatches,
+      profile
+    };
+  }
+
+  function commentModerationNotice(result, action) {
+    if (!result.matches.length || result.profile.value === 0) return "";
+    const plural = result.matches.length === 1 ? "" : "s";
+    if (action === "Posted") {
+      return `Comment posted. ${result.matches.length} word${plural} was hidden automatically.`;
+    }
+    if (action === "Saved") {
+      return `Comment updated. ${result.matches.length} word${plural} was hidden automatically.`;
+    }
+    return `${action}. ${result.matches.length} word${plural} was hidden automatically.`;
+  }
+
+  function readHashParams() {
+    const hash = window.location.hash.startsWith("#")
+      ? window.location.hash.slice(1)
+      : window.location.hash;
+    return new URLSearchParams(hash);
   }
 
   function withTimeout(promise, message = "Request timed out.", ms = 6000) {
@@ -363,6 +762,18 @@
     }
     if (data.user && data.session) ensureProfile(displayName).catch(() => {});
     return data;
+  }
+
+  async function requestPasswordReset(email) {
+    if (!client) throw new Error("Supabase is not configured.");
+    const { error } = await withTimeout(
+      client.auth.resetPasswordForEmail(email, {
+        redirectTo: authRecoveryUrl()
+      }),
+      "Password reset took too long. Check your connection and try again.",
+      12000
+    );
+    if (error) throw error;
   }
 
   async function signOut() {
@@ -657,6 +1068,7 @@
             <button type="submit" class="btn btn-primary">Sign In</button>
             <button type="button" class="btn" data-auth-mode="signup">Create Account</button>
           </div>
+          <button type="button" class="auth-link" data-auth-reset>Forgot password?</button>
         </form>
         <form id="${prefix}SignUpForm" data-auth-form="signup" class="hidden">
           <div class="form-group">
@@ -697,6 +1109,7 @@
             <button type="submit" class="btn btn-primary">Sign In</button>
             <button type="button" class="btn" data-auth-mode="signup">Create Account</button>
           </div>
+          <button type="button" class="auth-link" data-auth-reset>Forgot password?</button>
         </form>
         <form id="readerSignUpForm" data-auth-form="signup" class="hidden">
           <div class="form-group">
@@ -911,9 +1324,11 @@
     let editingCommentId = null;
     let confirmingDeleteCommentId = null;
     let commentComposerOpen = false;
+    let pendingModerationNotice = "";
 
     async function refresh() {
       try {
+      await ensureCommentModerationLibraryLoaded();
       if (!client) {
         panel.innerHTML = '<p class="empty">Comments and likes require Supabase.</p>';
         commentList.innerHTML = '<li><p class="empty">Unavailable.</p></li>';
@@ -957,16 +1372,25 @@
             </form>`
           : `
             <div class="reader-panel-compact">
-              <button type="button" class="btn btn-primary" id="openCommentComposerBtn">Add Comment</button>
-              <p class="notice" id="readerNotice"></p>
+              <div class="reader-panel-actions">
+                <button type="button" class="btn btn-primary" id="openCommentComposerBtn">Add Comment</button>
+                <p class="notice" id="readerNotice"></p>
+              </div>
             </div>`
         : `
           ${readerAuthMarkup()}`;
+
+      const readerNotice = document.getElementById("readerNotice");
+      if (pendingModerationNotice && readerNotice) {
+        setNotice(readerNotice, pendingModerationNotice);
+        pendingModerationNotice = "";
+      }
 
       commentList.innerHTML = comments.length
         ? comments
             .map(
               (comment) => {
+                const moderatedComment = moderateCommentText(comment.body);
                 const canEdit = Boolean(user && comment.user_id === user.id);
                 const canDelete = Boolean(canEdit || admin);
                 const actions = `
@@ -991,7 +1415,7 @@
                   return `
                     <li>
                       <p class="comment-meta">${escapeHtml(comment.display_name || "Reader")} / ${formatDateTime(comment.created_at)}</p>
-                      <p class="comment-body">${escapeHtml(comment.body)}</p>
+                      <p class="comment-body">${escapeHtml(moderatedComment.text)}</p>
                       <div class="inline-confirm">
                         <p>Delete this comment?</p>
                         <div class="comment-actions">
@@ -1005,7 +1429,7 @@
                 return `
                   <li>
                     <p class="comment-meta">${escapeHtml(comment.display_name || "Reader")} / ${formatDateTime(comment.created_at)}</p>
-                    <p class="comment-body">${escapeHtml(comment.body)}</p>
+                    <p class="comment-body">${escapeHtml(moderatedComment.text)}</p>
                     ${canEdit || canDelete ? actions : ""}
                   </li>`;
               }
@@ -1016,6 +1440,9 @@
       wireEngagementForm(refresh, {
         onCommentPosted() {
           commentComposerOpen = false;
+        },
+        setPendingNotice(message) {
+          pendingModerationNotice = message;
         }
       });
       wireCommentComposerToggle();
@@ -1059,10 +1486,12 @@
           if (!body) return;
 
           try {
+            pendingModerationNotice = commentModerationNotice(moderateCommentText(body), "Saved");
             await updateComment(saveId, body);
             editingCommentId = null;
             await refresh();
           } catch (error) {
+            pendingModerationNotice = "";
             setNotice(document.getElementById("readerNotice"), error.message, true);
           }
           return;
@@ -1124,6 +1553,11 @@
       }
     });
 
+    window.addEventListener(COMMENT_MODERATION_CHANGE_EVENT, refresh);
+    window.addEventListener(COMMENT_MODERATION_LIBRARY_EVENT, refresh);
+    window.addEventListener("storage", (event) => {
+      if (!event.key || event.key === COMMENT_MODERATION_STORAGE_KEY) refresh();
+    });
     if (client) client.auth.onAuthStateChange(() => refresh());
     await refresh();
   }
@@ -1144,6 +1578,33 @@
     root.querySelectorAll("[data-auth-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         showMode(button.dataset.authMode);
+      });
+    });
+
+    root.querySelectorAll("[data-auth-reset]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const notice = document.getElementById(noticeId);
+        const submitButtons = [...root.querySelectorAll("button")];
+        const email = document.getElementById(`${prefix}SignInEmail`).value.trim();
+        if (!email) {
+          setNotice(notice, "Enter your email first, then use forgot password.", true);
+          return;
+        }
+
+        submitButtons.forEach((item) => {
+          item.disabled = true;
+        });
+        setNotice(notice, "Sending reset email...");
+        try {
+          await requestPasswordReset(email);
+          setNotice(notice, "Check your email for a password reset link.");
+        } catch (error) {
+          setNotice(notice, error.message, true);
+        } finally {
+          submitButtons.forEach((item) => {
+            item.disabled = false;
+          });
+        }
       });
     });
 
@@ -1227,8 +1688,13 @@
           const path = stripBasePath(window.location.pathname).replace(/\/+$/, "");
           const slug = path.startsWith("/posts/") ? path.split("/")[2] : new URLSearchParams(window.location.search).get("slug");
           const post = await getPost(slug);
+          const moderationResult = moderateCommentText(body);
           await addComment(post.id, body);
-          setNotice(notice, "");
+          if (options.setPendingNotice) {
+            options.setPendingNotice(commentModerationNotice(moderationResult, "Posted"));
+          } else {
+            setNotice(notice, commentModerationNotice(moderationResult, "Posted"));
+          }
           if (options.onCommentPosted) options.onCommentPosted();
           await refresh();
         } catch (error) {
@@ -1261,6 +1727,49 @@
 
     let editingPost = null;
     let posts = [];
+
+    function initModerationLab() {
+      const slider = document.getElementById("moderationLevel");
+      const summary = document.getElementById("moderationSummary");
+      const currentLabel = document.getElementById("moderationCurrentLabel");
+      const input = document.getElementById("moderationPreviewInput");
+      const output = document.getElementById("moderationPreviewOutput");
+      const matches = document.getElementById("moderationMatches");
+      if (!slider || !summary || !currentLabel || !input || !output || !matches) return;
+
+      const sync = async () => {
+        await ensureCommentModerationLibraryLoaded();
+        const profile = getCommentModerationProfile();
+        const result = moderateCommentText(input.value);
+        slider.value = String(profile.value);
+        currentLabel.textContent = profile.label;
+        summary.textContent = `${profile.description} Saved locally in this browser only.`;
+        output.textContent = result.text || "Masked preview will appear here.";
+        matches.textContent = result.matches.length
+          ? `${result.matches.length} masked ${result.matches.length === 1 ? "segment" : "segments"} in preview.`
+          : profile.value === 0
+            ? "Masking is currently off."
+            : "No masked segments detected in preview.";
+      };
+
+      if (!input.value.trim()) {
+        input.value = "That was crazzzyyyy shiiiiiiit, but the rest of this comment should stay readable.";
+      }
+
+      slider.addEventListener("input", async () => {
+        setCommentModerationLevel(slider.value);
+        await sync();
+      });
+      input.addEventListener("input", () => {
+        sync().catch(() => {});
+      });
+      window.addEventListener(COMMENT_MODERATION_CHANGE_EVENT, sync);
+      window.addEventListener(COMMENT_MODERATION_LIBRARY_EVENT, sync);
+      window.addEventListener("storage", (event) => {
+        if (!event.key || event.key === COMMENT_MODERATION_STORAGE_KEY) sync().catch(() => {});
+      });
+      sync().catch(() => {});
+    }
 
     async function refresh() {
       const user = await getUser();
@@ -1393,6 +1902,31 @@
       }
     });
 
+    document.getElementById("resetPasswordBtn")?.addEventListener("click", async () => {
+      const notice = document.getElementById("authNotice");
+      const email = document.getElementById("email").value.trim();
+      if (!email) {
+        setNotice(notice, "Enter your email first, then use forgot password.", true);
+        return;
+      }
+
+      const buttons = [...authForm.querySelectorAll("button")];
+      buttons.forEach((button) => {
+        button.disabled = true;
+      });
+      setNotice(notice, "Sending reset email...");
+      try {
+        await requestPasswordReset(email);
+        setNotice(notice, "Check your email for a password reset link.");
+      } catch (error) {
+        setNotice(notice, error.message, true);
+      } finally {
+        buttons.forEach((button) => {
+          button.disabled = false;
+        });
+      }
+    });
+
     document.getElementById("signOutBtn").addEventListener("click", async () => {
       await signOut();
       await refresh();
@@ -1487,6 +2021,7 @@
     });
 
     clearForm();
+    initModerationLab();
     if (!configured) {
       setNotice(
         document.getElementById("authNotice"),
@@ -1610,12 +2145,108 @@
     if (window.location.hash === "#account") window.setTimeout(openAccountPopover, 0);
   }
 
+  async function initResetPassword() {
+    const form = document.getElementById("resetPasswordForm");
+    const passwordField = document.getElementById("resetPassword");
+    const confirmField = document.getElementById("resetPasswordConfirm");
+    const notice = document.getElementById("resetPasswordNotice");
+    const intro = document.getElementById("resetPasswordIntro");
+    const successPanel = document.getElementById("resetPasswordSuccess");
+    if (!form || !passwordField || !confirmField || !notice) return;
+
+    if (!client) {
+      setNotice(notice, "Supabase is not configured.", true);
+      return;
+    }
+
+    const syncState = async () => {
+      const hashParams = readHashParams();
+      const hashErrorCode = hashParams.get("error_code");
+      const hashErrorDescription = hashParams.get("error_description");
+      if (hashErrorCode) {
+        form.classList.add("hidden");
+        if (successPanel) successPanel.classList.add("hidden");
+        if (intro) {
+          intro.textContent = hashErrorCode === "otp_expired"
+            ? "This password reset link has expired or has already been used."
+            : "This password reset link could not be used.";
+        }
+        setNotice(
+          notice,
+          hashErrorCode === "otp_expired"
+            ? "This reset link is no longer valid. Request a new password reset email and use the newest link."
+            : (hashErrorDescription || "Password reset failed."),
+          true
+        );
+        return;
+      }
+
+      const { data } = await client.auth.getSession();
+      const hasSession = Boolean(data.session);
+      form.classList.toggle("hidden", !hasSession);
+      if (intro) {
+        intro.textContent = hasSession
+          ? "Enter a new password for your account."
+          : "Open this page from the password reset link in your email.";
+      }
+      if (!hasSession) {
+        setNotice(notice, "Password reset link required.", true);
+      } else if (!successPanel || successPanel.classList.contains("hidden")) {
+        setNotice(notice, "");
+      }
+    };
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const password = passwordField.value;
+      const confirmPassword = confirmField.value;
+
+      if (password.length < 8) {
+        setNotice(notice, "Use at least 8 characters.", true);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setNotice(notice, "Passwords do not match.", true);
+        return;
+      }
+
+      const buttons = [...form.querySelectorAll("button")];
+      buttons.forEach((button) => {
+        button.disabled = true;
+      });
+      setNotice(notice, "Saving new password...");
+      try {
+        const { error } = await withTimeout(
+          client.auth.updateUser({ password }),
+          "Password update took too long. Check your connection and try again.",
+          12000
+        );
+        if (error) throw error;
+        form.reset();
+        form.classList.add("hidden");
+        if (successPanel) successPanel.classList.remove("hidden");
+        setNotice(notice, "");
+        window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+      } catch (error) {
+        setNotice(notice, error.message, true);
+      } finally {
+        buttons.forEach((button) => {
+          button.disabled = false;
+        });
+      }
+    });
+
+    if (client) client.auth.onAuthStateChange(() => syncState());
+    await syncState();
+  }
+
   window.SMLBlog = {
     initPublicSite,
     renderNavAccount,
     renderHome,
     renderArchive,
     renderPost,
-    initAdmin
+    initAdmin,
+    initResetPassword
   };
 })();

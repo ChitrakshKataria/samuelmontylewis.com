@@ -9,7 +9,7 @@
     const firstPathSegment = location.pathname.split("/").filter(Boolean)[0] || "";
     window.SML_BASE_PATH = location.hostname.endsWith("github.io") &&
       firstPathSegment &&
-      !["archive", "posts", "admin", "assets", "email-confirmed"].includes(firstPathSegment)
+      !["archive", "posts", "admin", "assets", "email-confirmed", "reset-password"].includes(firstPathSegment)
       ? "/" + firstPathSegment
       : "";
     const stylesheet = document.createElement("link");

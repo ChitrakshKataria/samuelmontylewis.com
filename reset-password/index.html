@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Reset your password for Samuel Monty Lewis.">
+  <title>Reset Password - Samuel Monty Lewis</title>
+  <script>
+    const firstPathSegment = location.pathname.split("/").filter(Boolean)[0] || "";
+    window.SML_BASE_PATH = location.hostname.endsWith("github.io") &&
+      firstPathSegment &&
+      !["archive", "posts", "admin", "assets", "email-confirmed", "reset-password"].includes(firstPathSegment)
+      ? "/" + firstPathSegment
+      : "";
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = window.SML_BASE_PATH + "/assets/css/styles.css";
+    document.head.appendChild(stylesheet);
+  </script>
+</head>
+<body class="simple-page">
+  <nav>
+    <a href="/" data-href="/">Home</a>
+    <a href="/archive/" data-href="/archive/">Archive</a>
+  </nav>
+
+  <main>
+    <p class="section-label">Account</p>
+    <div class="confirmation-card">
+      <h1>Reset password</h1>
+      <p class="confirmation-copy" id="resetPasswordIntro">Open this page from the password reset link in your email.</p>
+
+      <form id="resetPasswordForm" class="hidden">
+        <div class="form-group">
+          <label for="resetPassword">New Password</label>
+          <input type="password" id="resetPassword" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="form-group">
+          <label for="resetPasswordConfirm">Confirm Password</label>
+          <input type="password" id="resetPasswordConfirm" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="confirmation-actions">
+          <button type="submit" class="btn btn-primary">Save New Password</button>
+        </div>
+      </form>
+
+      <div id="resetPasswordSuccess" class="hidden">
+        <p class="confirmation-copy">Your password has been updated. You can return to the site and sign in with your new password.</p>
+        <div class="confirmation-actions">
+          <a href="/" data-href="/" class="btn btn-primary">Return to the website</a>
+        </div>
+      </div>
+
+      <p class="notice" id="resetPasswordNotice"></p>
+    </div>
+  </main>
+
+  <script>
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.body.appendChild(script);
+      });
+    }
+
+    document.querySelectorAll("[data-href]").forEach((element) => {
+      element.setAttribute("href", window.SML_BASE_PATH + element.dataset.href);
+    });
+
+    loadScript(window.SML_BASE_PATH + "/assets/js/config.js")
+      .then(() => loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2").catch(() => undefined))
+      .then(() => loadScript(window.SML_BASE_PATH + "/assets/js/app.js"))
+      .then(() => SMLBlog.initResetPassword())
+      .catch((error) => {
+        const notice = document.getElementById("resetPasswordNotice");
+        if (notice) notice.textContent = error.message;
+      });
+  </script>
+</body>
+</html>

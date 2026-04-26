@@ -317,9 +317,15 @@ label,
 }
 
 .reader-panel-compact {
+  display: grid;
+  gap: 12px;
+}
+
+.reader-panel-actions {
   display: flex;
   align-items: center;
   gap: 14px;
+  flex-wrap: wrap;
 }
 
 .account-box {
@@ -373,6 +379,62 @@ label,
   color: #999;
   font-size: 15px;
   line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.moderation-panel {
+  padding: 28px;
+  border: 1px solid var(--line-soft);
+  background: #101010;
+}
+
+.moderation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.moderation-level {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.moderation-slider {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+.moderation-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: #5d5d5d;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.moderation-input {
+  min-height: 160px;
+}
+
+.moderation-preview {
+  min-height: 160px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  background: #131313;
+  color: #b5b5b5;
+  font-size: 15px;
+  line-height: 1.8;
   white-space: pre-wrap;
 }
 
@@ -512,6 +574,23 @@ textarea {
 .word-count {
   color: var(--text-faint);
   font-size: 11px;
+}
+
+.auth-link {
+  margin-top: 10px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #777;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  transition: color 0.2s;
+}
+
+.auth-link:hover {
+  color: var(--accent);
 }
 
 .notice {
@@ -679,6 +758,7 @@ textarea {
   .form-actions,
   .engagement-header,
   .auth-actions,
+  .reader-panel-actions,
   .confirmation-actions {
     flex-wrap: wrap;
   }

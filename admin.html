@@ -9,7 +9,7 @@
     const firstPathSegment = location.pathname.split("/").filter(Boolean)[0] || "";
     window.SML_BASE_PATH = location.hostname.endsWith("github.io") &&
       firstPathSegment &&
-      !["archive", "posts", "admin", "assets", "email-confirmed"].includes(firstPathSegment)
+      !["archive", "posts", "admin", "assets", "email-confirmed", "reset-password"].includes(firstPathSegment)
       ? "/" + firstPathSegment
       : "";
     const stylesheet = document.createElement("link");
@@ -42,6 +42,7 @@
         <div class="auth-actions">
           <button type="submit" class="btn btn-primary">Sign In</button>
         </div>
+        <button type="button" class="auth-link" id="resetPasswordBtn">Forgot password?</button>
         <p class="notice" id="authNotice"></p>
       </form>
     </section>
@@ -83,8 +84,6 @@
         <p class="activity-label">Posts by Month</p>
         <div id="activityBars"></div>
       </div>
-
-      <hr>
 
       <p class="section-label">About</p>
       <h2>About Me</h2>
@@ -153,6 +152,41 @@
 
       <p class="section-label">All Posts</p>
       <ul class="post-list admin-post-list" id="postList"></ul>
+
+      <hr>
+
+      <p class="section-label">Moderation Lab</p>
+      <h2>Comment Moderation</h2>
+
+      <section class="moderation-panel">
+        <div class="moderation-header">
+          <p class="activity-label">Local Only</p>
+          <p class="moderation-level" id="moderationCurrentLabel">Balanced</p>
+        </div>
+
+        <div class="form-group">
+          <label for="moderationLevel">Sensitivity</label>
+          <input type="range" min="0" max="3" step="1" value="2" id="moderationLevel" class="moderation-slider">
+          <div class="moderation-scale">
+            <span>Off</span>
+            <span>Light</span>
+            <span>Balanced</span>
+            <span>Strict</span>
+          </div>
+          <p class="field-note" id="moderationSummary"></p>
+        </div>
+
+        <div class="form-group">
+          <label for="moderationPreviewInput">Preview Input</label>
+          <textarea id="moderationPreviewInput" class="moderation-input" placeholder="Paste a sample comment here to test masking."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="moderationPreviewOutput">Masked Output</label>
+          <div id="moderationPreviewOutput" class="moderation-preview" aria-live="polite"></div>
+          <p class="field-note" id="moderationMatches"></p>
+        </div>
+      </section>
     </section>
   </main>
 
