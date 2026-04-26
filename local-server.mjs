@@ -18,9 +18,15 @@ createServer((request, response) => {
   const url = new URL(request.url || "/", `http://${request.headers.host}`);
   const pathname = decodeURIComponent(url.pathname);
   const target = pathname === "/" ? "/index.html" : pathname;
-  const filePath = normalize(join(root, target));
+  const candidatePath = normalize(join(root, target));
+  const resolvedRoot = resolve(root);
+  let filePath = candidatePath;
 
-  if (!filePath.startsWith(resolve(root)) || !existsSync(filePath) || !statSync(filePath).isFile()) {
+  if (candidatePath.startsWith(resolvedRoot) && existsSync(candidatePath) && statSync(candidatePath).isDirectory()) {
+    filePath = join(candidatePath, "index.html");
+  }
+
+  if (!filePath.startsWith(resolvedRoot) || !existsSync(filePath) || !statSync(filePath).isFile()) {
     const fallbackPath = join(root, "index.html");
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     createReadStream(fallbackPath).pipe(response);

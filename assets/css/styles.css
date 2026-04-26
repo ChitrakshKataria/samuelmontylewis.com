@@ -77,6 +77,41 @@ nav a.active {
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
 }
 
+.simple-page {
+  display: block;
+}
+
+.simple-page nav {
+  width: 100%;
+  min-height: auto;
+  padding-bottom: 0;
+}
+
+.simple-page main {
+  max-width: 760px;
+  padding-top: 40px;
+}
+
+.confirmation-card {
+  max-width: 520px;
+  padding: 32px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.confirmation-copy {
+  margin-bottom: 28px;
+  color: #999;
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.confirmation-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
 main {
   width: 100%;
   max-width: 680px;
@@ -607,8 +642,16 @@ textarea {
     right: 16px;
   }
 
+  .simple-page nav {
+    padding-bottom: 0;
+  }
+
   main {
     padding: 48px 24px 64px;
+  }
+
+  .simple-page main {
+    padding-top: 24px;
   }
 
   .form-grid,
@@ -627,7 +670,8 @@ textarea {
   .post-actions,
   .form-actions,
   .engagement-header,
-  .auth-actions {
+  .auth-actions,
+  .confirmation-actions {
     flex-wrap: wrap;
   }
 }

@@ -114,7 +114,7 @@
   }
 
   function authRedirectUrl() {
-    return absoluteSiteUrl("/?account=confirmed");
+    return absoluteSiteUrl("/email-confirmed/");
   }
 
   function stripBasePath(pathname) {

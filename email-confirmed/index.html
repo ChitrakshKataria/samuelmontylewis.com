@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Email confirmed for Samuel Monty Lewis.">
+  <title>Email Confirmed - Samuel Monty Lewis</title>
+  <script>
+    const firstPathSegment = location.pathname.split("/").filter(Boolean)[0] || "";
+    window.SML_BASE_PATH = location.hostname.endsWith("github.io") &&
+      firstPathSegment &&
+      !["archive", "posts", "admin", "assets", "email-confirmed"].includes(firstPathSegment)
+      ? "/" + firstPathSegment
+      : "";
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = window.SML_BASE_PATH + "/assets/css/styles.css";
+    document.head.appendChild(stylesheet);
+  </script>
+</head>
+<body class="simple-page">
+  <nav>
+    <a href="/" data-href="/">Home</a>
+    <a href="/archive/" data-href="/archive/">Archive</a>
+  </nav>
+
+  <main>
+    <p class="section-label">Account</p>
+    <div class="confirmation-card">
+      <h1>Email confirmed.</h1>
+      <p class="confirmation-copy">Your account is ready. You can return to the site and sign in with the email and password you used when you signed up.</p>
+      <div class="confirmation-actions">
+        <a href="/" data-href="/" class="btn btn-primary">Return to the website</a>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    document.querySelectorAll("[data-href]").forEach((element) => {
+      element.setAttribute("href", window.SML_BASE_PATH + element.dataset.href);
+    });
+  </script>
+</body>
+</html>
